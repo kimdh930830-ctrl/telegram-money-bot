@@ -38,7 +38,10 @@ async function sendTelegram(chatId, text) {
 async function getTotal(chatId, year, month) {
   const url =
     `${process.env.SUPABASE_URL}/rest/v1/monthly_totals` +
-    `?chat_id=eq.${chatId}&year=eq.${year}&month=eq.${month}&select=total`;
+    `?chat_id=eq.${encodeURIComponent(chatId)}` +
+    `&year=eq.${year}` +
+    `&month=eq.${month}` +
+    `&select=total`;
 
   const res = await fetch(url, {
     method: "GET",
@@ -51,72 +54,58 @@ async function getTotal(chatId, year, month) {
 
   const data = await res.json();
 
+  if (!res.ok) {
+    throw new Error(JSON.stringify(data));
+  }
+
   if (!Array.isArray(data) || data.length === 0) {
     return 0;
   }
 
-  return data[0].total || 0;
+  return Number(data[0].total || 0);
+}
+
+async function saveTotal(chatId, year, month, total) {
+  const url =
+    `${process.env.SUPABASE_URL}/rest/v1/monthly_totals` +
+    `?on_conflict=chat_id,year,month`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates,return=representation"
+    },
+    body: JSON.stringify([
+      {
+        chat_id: String(chatId),
+        year,
+        month,
+        total,
+        updated_at: new Date().toISOString()
+      }
+    ])
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(JSON.stringify(data));
+  }
+
+  return total;
 }
 
 async function upsertTotal(chatId, year, month, amount) {
   const current = await getTotal(chatId, year, month);
   const next = current + amount;
-
-  const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/monthly_totals`, {
-    method: "POST",
-    headers: {
-      apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: "resolution=merge-duplicates,return=representation"
-    },
-    body: JSON.stringify([
-      {
-        chat_id: String(chatId),
-        year,
-        month,
-        total: next,
-        updated_at: new Date().toISOString()
-      }
-    ])
-  });
-
-  const data = await res.json();
-
-  if (!res.ok) {
-    throw new Error(JSON.stringify(data));
-  }
-
-  return next;
+  return await saveTotal(chatId, year, month, next);
 }
 
 async function resetTotal(chatId, year, month) {
-  const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/monthly_totals`, {
-    method: "POST",
-    headers: {
-      apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: "resolution=merge-duplicates,return=representation"
-    },
-    body: JSON.stringify([
-      {
-        chat_id: String(chatId),
-        year,
-        month,
-        total: 0,
-        updated_at: new Date().toISOString()
-      }
-    ])
-  });
-
-  const data = await res.json();
-
-  if (!res.ok) {
-    throw new Error(JSON.stringify(data));
-  }
-
-  return 0;
+  return await saveTotal(chatId, year, month, 0);
 }
 
 export default async function handler(req, res) {
@@ -148,14 +137,23 @@ export default async function handler(req, res) {
       const monthQuery = parseMonthQuery(message);
 
       if (monthQuery) {
-        const total = await getTotal(String(chatId), monthQuery.year, monthQuery.month);
+        const total = await getTotal(
+          String(chatId),
+          monthQuery.year,
+          monthQuery.month
+        );
         reply = `${monthQuery.year}년 ${monthQuery.month}월 누적: ${total}원`;
       } else {
         const match = message.match(/[+-]?\d+/);
 
         if (match) {
           const amount = parseInt(match[0], 10);
-          const total = await upsertTotal(String(chatId), currentYear, currentMonth, amount);
+          const total = await upsertTotal(
+            String(chatId),
+            currentYear,
+            currentMonth,
+            amount
+          );
           reply = `${amount}원 반영 완료\n현재 ${currentYear}년 ${currentMonth}월 누적: ${total}원`;
         } else {
           reply = "숫자, '총액', '초기화', '3월', '2026년 3월'로 입력하세요.";
